@@ -23,7 +23,7 @@
 * Device(s)    : R5F10Y47
 * Tool-Chain   : CCRL
 * Description  : This file implements main function.
-* Creation Date: 2023/11/12
+* Creation Date: 2023/11/14
 ***********************************************************************************************************************/
 
 /***********************************************************************************************************************
@@ -156,26 +156,94 @@ void to_string(char *dst, int16_t value) {
 	*dst = '\0';
 }
 
-static void set_speed(int8_t speed) {
+static void set_speed_fast_decay(int8_t speed) {
 	if (speed < -100 || 100 < speed) {
 		return;
 	}
 	// PWM出力の周期
 	uint32_t pwm_period = (TDR00H << 8 | TDR00L) + 1;
-	//
-	uint16_t forward = 0;
-	uint16_t backward = 0;
-	if (speed < 0) {
-		forward = 0;
-		backward = pwm_period * (uint32_t) (-speed) / 100;
-	} else if (speed > 0) {
-		forward = pwm_period * (uint32_t) speed / 100;
-		backward = 0;
+	if (speed > 0) {
+		//
+		// 正転
+		// IN1: PWM(Active High)
+		// IN2: Low
+		//
+		// タイマー出力論理(TO01/TO02共にアクティブハイ)
+		TOL0 &= (uint8_t)~0x06;
+		// TO01デューティ
+		uint32_t timer = pwm_period * (uint32_t)speed / 100;
+		TDR01H = (timer >> 8) & 0xFF;
+		TDR01L = timer & 0xFF;
+		// TO02デューティ
+		TDR02H = TDR02L = 0;	// 出力Low固定
+	} else if (speed < 0) {
+		speed = -speed;
+		//
+		// 逆転
+		// IN1: Low
+		// IN2: PWM(Active High)
+		//
+		// タイマー出力論理(TO01/TO02共にアクティブハイ)
+		TOL0 &= (uint8_t)~0x06;
+		// TO01デューティ
+		TDR01H = TDR01L = 0;	// 出力Low固定
+		// TO02デューティ
+		uint32_t timer = pwm_period * (uint32_t)speed / 100;
+		TDR02H = (timer >> 8) & 0xFF;
+		TDR02L = timer & 0xFF;
+	} else {
+		// タイマー出力論理(TO01/TO02共にアクティブハイ)
+		TOL0 &= (uint8_t)~0x06;
+		// TO01デューティ
+		TDR01H = TDR01L = 0;
+		// TO02デューティ
+		TDR02H = TDR02L = 0;
 	}
-	TDR01H = (forward >> 8) & 0xFF;
-	TDR01L = forward & 0xFF;
-	TDR02H = (backward >> 8) & 0xFF;
-	TDR02L = backward & 0xFF;
+}
+
+static void set_speed_slow_decay(int8_t speed) {
+	if (speed < -100 || 100 < speed) {
+		return;
+	}
+	// PWM出力の周期
+	uint32_t pwm_period = (TDR00H << 8 | TDR00L) + 1;
+	if (speed > 0) {
+		//
+		// 正転
+		// IN1: High
+		// IN2: PWM(Active Low)
+		//
+		// タイマー出力論理(TO01/TO02共にアクティブロー)
+		TOL0 |= (uint8_t)0x06;
+		// TO01デューティ
+		TDR01H = TDR01L = 0; // 出力High固定
+		// TO02デューティ
+		uint32_t timer = pwm_period * (uint32_t)speed / 100;
+		TDR02H = (timer >> 8) & 0xFF;
+		TDR02L = timer & 0xFF;
+	} else if (speed < 0) {
+		speed = -speed;
+		//
+		// 逆転
+		// IN1: PWM(Active Low)
+		// IN2: High
+		//
+		// タイマー出力論理(TO01/TO02共にアクティブロー)
+		TOL0 |= (uint8_t)0x06;
+		// TO01デューティ
+		uint32_t timer = pwm_period * (uint32_t)speed / 100;
+		TDR01H = (timer >> 8) & 0xFF;
+		TDR01L = timer & 0xFF;
+		// TO02デューティ
+		TDR02H = TDR02L = 0; // 出力High固定
+	} else {
+		// タイマー出力論理(TO01/TO02共にアクティブハイ)
+		TOL0 &= (uint8_t)~0x06;
+		// TO01デューティ
+		TDR01H = TDR01L = 0;
+		// TO02デューティ
+		TDR02H = TDR02L = 0;
+	}
 }
 /* End user code. Do not edit comment generated here */
 
@@ -194,8 +262,6 @@ void main(void)
 	delay(100);
 	// LCDの初期化
 	AQM1602A_init();
-	// 1行目
-	AQM1602A_puts("RL78 DC motor");
 	//
 	gROTATION_COUNTER = 0;
 	while (1U) {
@@ -207,8 +273,18 @@ void main(void)
 		//
 		AQM1602A_send_command(0x80 | 0x40); // アドレス設定
 		AQM1602A_puts(message);
-		//
-		set_speed(gROTATION_COUNTER);
+		// ポート2でfast decay / slow decay を切り替える
+		if(P0_bit.no2) {
+			set_speed_slow_decay(gROTATION_COUNTER);
+			// 1行目
+			AQM1602A_send_command(0x80); // アドレス設定
+			AQM1602A_puts("RL78 DC motor(S)");
+		} else {
+			set_speed_fast_decay(gROTATION_COUNTER);
+			// 1行目
+			AQM1602A_send_command(0x80); // アドレス設定
+			AQM1602A_puts("RL78 DC motor(F)");
+		}
 		//
 		delay(100);
 	}
